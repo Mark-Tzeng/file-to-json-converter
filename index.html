@@ -1,12 +1,14 @@
+
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>File → JSON Converter</title>
+  <title>File → JSON Converter | docx · xlsx · pdf</title>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
     :root {
       --bg: #0a0a0f;
@@ -221,6 +223,11 @@
       color: #34d399;
       border: 1px solid rgba(16,185,129,0.3);
     }
+    .type-tag.pdf {
+      background: rgba(239,68,68,0.12);
+      color: #fca5a5;
+      border: 1px solid rgba(239,68,68,0.3);
+    }
 
     input[type="file"] { display: none; }
 
@@ -252,6 +259,7 @@
     }
     .file-icon-box.docx { background: rgba(124,58,237,0.2); color: #a78bfa; }
     .file-icon-box.xlsx { background: rgba(16,185,129,0.15); color: #34d399; }
+    .file-icon-box.pdf  { background: rgba(239,68,68,0.15); color: #fca5a5; }
 
     .file-details { flex: 1; min-width: 0; }
     .file-name {
@@ -486,7 +494,7 @@
     <div class="header">
       <div class="badge"><div class="badge-dot"></div>Browser-side · No upload needed</div>
       <h1>
-        <span class="word1">.docx / .xlsx</span><br>
+        <span class="word1">.docx / .xlsx / .pdf</span><br>
         <span class="arrow">→ </span><span class="word2">.json</span>
       </h1>
       <p class="subtitle">拖曳檔案即可轉換 · <span>完全在本地端處理</span></p>
@@ -503,12 +511,13 @@
         </svg>
       </div>
       <div class="drop-title">拖曳檔案到這裡，或點擊選擇</div>
-      <div class="drop-sub">支援格式 → .docx · .xlsx</div>
+      <div class="drop-sub">支援格式 → .docx · .xlsx · .pdf</div>
       <div class="type-tags">
         <span class="type-tag docx">.DOCX</span>
         <span class="type-tag xlsx">.XLSX</span>
+        <span class="type-tag pdf">.PDF</span>
       </div>
-      <input type="file" id="fileInput" accept=".docx,.xlsx" />
+      <input type="file" id="fileInput" accept=".docx,.xlsx,.pdf" />
     </div>
 
     <!-- File Card -->
@@ -614,15 +623,15 @@
 
     function loadFile(file) {
       const ext = file.name.split('.').pop().toLowerCase();
-      if (!['docx', 'xlsx'].includes(ext)) {
-        showStatus('error', '⚠ 只支援 .docx 和 .xlsx 格式');
+      if (!['docx', 'xlsx', 'pdf'].includes(ext)) {
+        showStatus('error', '⚠ 只支援 .docx、.xlsx 和 .pdf 格式');
         return;
       }
       currentFile = file;
       jsonResult = null;
-      outputFilename = file.name.replace(/\.(docx|xlsx)$/, '.json');
+      outputFilename = file.name.replace(/\.(docx|xlsx|pdf)$/, '.json');
 
-      const ext2 = ext === 'docx' ? 'docx' : 'xlsx';
+      const ext2 = ext === 'docx' ? 'docx' : ext === 'xlsx' ? 'xlsx' : 'pdf';
       fileIconBox.className = `file-icon-box ${ext2}`;
       fileIconBox.textContent = ext.toUpperCase();
       fileName.textContent = file.name;
@@ -647,6 +656,8 @@
           jsonResult = await convertDocx(file);
         } else if (ext === 'xlsx') {
           jsonResult = await convertXlsx(file);
+        } else if (ext === 'pdf') {
+          jsonResult = await convertPdf(file);
         }
         showProgress('格式化 JSON...', 90);
         await delay(300);
@@ -732,6 +743,88 @@
           sheet_names: workbook.SheetNames
         },
         sheets: sheets
+      };
+    }
+
+    async function convertPdf(file) {
+      showProgress('載入 PDF 引擎...', 15);
+      // Set PDF.js worker
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+      const arrayBuffer = await file.arrayBuffer();
+      showProgress('解析 PDF 文件...', 30);
+
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      const totalPages = pdf.numPages;
+
+      showProgress(`提取頁面內容 (共 ${totalPages} 頁)...`, 45);
+
+      const pages = [];
+      let allText = '';
+
+      for (let i = 1; i <= totalPages; i++) {
+        const pct = 45 + Math.round((i / totalPages) * 40);
+        showProgress(`解析第 ${i} / ${totalPages} 頁...`, pct);
+
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 1 });
+        const textContent = await page.getTextContent();
+
+        // Build lines from text items
+        const items = textContent.items;
+        const lineMap = {};
+        items.forEach(item => {
+          if (!item.str) return;
+          const y = Math.round(item.transform[5]);
+          if (!lineMap[y]) lineMap[y] = [];
+          lineMap[y].push(item.str);
+        });
+
+        const sortedYs = Object.keys(lineMap).map(Number).sort((a, b) => b - a);
+        const lines = sortedYs.map(y => lineMap[y].join(' ').trim()).filter(l => l.length > 0);
+        const pageText = lines.join('\n');
+        allText += pageText + '\n\n';
+
+        pages.push({
+          page_number: i,
+          width: Math.round(viewport.width),
+          height: Math.round(viewport.height),
+          text: pageText,
+          lines: lines,
+          line_count: lines.length,
+          char_count: pageText.length
+        });
+      }
+
+      showProgress('建構 JSON 結構...', 90);
+
+      // Get PDF metadata
+      const meta = await pdf.getMetadata().catch(() => ({}));
+      const info = meta.info || {};
+
+      return {
+        metadata: {
+          filename: file.name,
+          filesize: file.size,
+          converted_at: new Date().toISOString(),
+          source_format: 'pdf',
+          total_pages: totalPages,
+          total_characters: allText.length,
+          pdf_info: {
+            title: info.Title || null,
+            author: info.Author || null,
+            subject: info.Subject || null,
+            creator: info.Creator || null,
+            producer: info.Producer || null,
+            creation_date: info.CreationDate || null
+          }
+        },
+        content: {
+          full_text: allText.trim(),
+          pages: pages
+        }
       };
     }
 
